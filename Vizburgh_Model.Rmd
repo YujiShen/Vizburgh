@@ -1,0 +1,235 @@
+---
+title: "Vizburgh Model"
+author: "Yuji Shen"
+date: "March 3, 2015"
+output:
+  html_document:
+    css: style.css
+---
+
+******
+Data: [PGHSNAP Raw Data on Google Sheet](https://docs.google.com/spreadsheet/ccc?key=0Ag0xdSSLPcUHdEo0STlkRVBpcVZEcUtwTG9wWjJTd2c#gid=1)
+
+```{r knitr.setting,echo=FALSE}
+knitr::opts_chunk$set(warning = FALSE,
+                      message = FALSE,
+                      echo = F)
+```
+
+```{r data}
+setwd('/Users/Yuji/Workspace/R/Visburgh')
+library(ggplot2)
+library(gridExtra)
+library(MASS)
+library(gdata)
+library(rgdal)
+library(rgeos)
+
+data.transform <- function(data){
+  for(i in 1:ncol(data)){
+    if(sum(grepl("\\$", data[[i]])) > 0){
+      data[i] <- gsub("\\$", "", data[[i]])
+    }
+    if(sum(grepl(",", data[[i]])) > 0){
+      data[i] <- as.numeric(gsub(",", "", data[[i]]))
+    }
+    if(sum(grepl("%", data[[i]])) > 0){
+      data[i] <- as.numeric(gsub("%", "", data[[i]]))/100
+    }
+  }
+  data
+}
+
+readXLS <- function(file){
+  data.list <- list()
+  sheetList <- sheetNames(file)
+  for(i in 1:length(sheetList)){
+    data.list[[sheetList[i]]] <- data.transform(read.xls(file, sheet = sheetList[i], na.strings = "N/A"))
+  }
+  data.list
+}
+
+xls.file <- "/Users/Yuji/Workspace/R/Visburgh/PGHSNAP.xls"
+data.list <- readXLS(xls.file)
+
+# colnames(newdata) <- gsub("\\.+",".",colnames(newdata))
+
+dat1 <- cbind(data.list[[2]][24], data.list[[2]][22], data.list[[5]][9:15])
+
+op <- par()
+```
+
+# Housing Sales Price & Crime
+## Log Effect on Finacial Data
+```{r log transformation,fig.height=3}
+# cor(dat1, use = "complete.obs")
+p1 <- qplot(dat1[[1]], data = dat1, xlim = c(0,400000), xlab = "Median Sale Price", main = "Raw v.s. Log Median Sales Price")
+p2 <- qplot(log(dat1[[1]]), data = dat1, xlab = "log(Median Sale Price)")
+grid.arrange(p1, p2, ncol = 1)
+
+p3 <- qplot(dat1[[2]], data = dat1, xlab = "Median Home Value", main = "Raw v.s. Log Median Housing Value")
+p4 <- qplot(log(dat1[[2]]), data = dat1, xlab = "log(Median Home Value)")
+grid.arrange(p3, p4, ncol = 1)
+```
+
+After apply logrithm on `Median Sales Price` and `Median Home Value`, right-skewed data looks normal.
+
+## Simple Linear Regression
+```{r simple linear}
+m.linear <- lm(Median.Sale.Price..2010. ~ ., dat1)
+
+# par(mar = rep(2, 4))
+# par(mfrow = c(2, 2))
+# plot(m.linear)
+# par(op)
+summary(m.linear)
+```
+
+In this simple linear regression model, I do not do any transformation on data, and the result shows only `Median Home Value` is significant in this model. And the R-squared is about 0.62.
+
+## Linear Regression with Log Transformation
+```{r log linear}
+m.linear.log <- lm(log(Median.Sale.Price..2010.) ~ log(Median.Home..Value..2010.) + . - Median.Home..Value..2010., dat1)
+
+# par(mar = rep(2, 4))
+# par(mfrow = c(2, 2))
+# plot(m.linear.log)
+# par(op)
+summary(m.linear.log)
+```
+
+I add log transformation on `Median Sales Price` and `Median Home Value`. Although the R-squared decreases a little, `Drug` and `Murder` show their effect on the model.
+
+## Generalized Linear Regression
+```{r glm}
+m.glm <- glm(Median.Sale.Price..2010. ~ ., dat1, na.action=na.exclude, family=poisson)
+# par(mar = rep(2, 4))
+# par(mfrow = c(2, 2))
+# plot(m.glm)
+# par(op)
+summary.glm(m.glm)
+```
+
+The result of this GLM with Poisson family is strange, because all of the coefficients are significant.
+
+## Linear Regression with PCA on Crime
+```{r}
+pca.crime <- prcomp(dat1[-c(1,2)], scale = T)
+pc.crime <- predict(pca.crime)
+pca.crime$rotation
+#plot(pca.crime, main = "Screeplot of Crime")
+
+#crime.dist <- dist(dat1[-c(1,2)])
+#crime.mds <- cmdscale(crime.dist)
+#plot(crime.mds, type = 'n', main = "Multidimensional Scaling on Crime")
+#text(crime.mds, labels=data.list[[1]][[1]])
+
+m.lm.pc <- lm(log(dat1$Median.Sale.Price..2010.) ~ log(dat1$Median.Home..Value..2010.) + pc.crime[,1] + pc.crime[,2])
+# par(mar = rep(2, 4))
+# par(mfrow = c(2, 2))
+# plot(m.lm.pc)
+# par(op)
+summary(m.lm.pc)
+```
+
+In this model, I do PCA on Crime and use PC1 and PC2 in the model. It is interesting that PC1 is not significant but PC2 is. According to the loadings of PC2, which has positive values on `Murder` and `Drug`, this result is consistent with the Linear Regression with Log Transformation.
+
+******
+
+#Clustering of Neiborghhoods
+
+
+I want to explore the relationship between **Planning Sector** and the **overall statistics** (all data in Vizburgh) for neighborhoods. So I do **K-means Cluster** on the entire dataset. Because there are 16 sectors, I set the cluster nubmer to 16. Due to limit of k-means algorithm, I replace the NA with median data.
+
+Here is the sector plot:
+
+```{r plot sector}
+dat2 <- cbind(data.list[[1]][c(1, 2, 10, 22:27)],
+              data.list[[2]][c(22, 24)],
+              data.list[[4]][16],
+              data.list[[5]][c(7, 9:15)],
+              data.list[[2]][9:11])
+
+row.names(dat2) <- as.character(data.list[[1]][[1]])
+#dat2 <- na.omit(dat2)
+dat2[-c(1:2)] <- data.frame(apply(dat2[-c(1:2)], 2, function(x){
+  x[is.na(x)] <- median(x, na.rm = T)
+  x
+}))
+dat2[-c(1:2)] <- scale(dat2[-c(1:2)])
+labels <- as.character(data.list[[1]][[1]])
+
+map <- readOGR("/Users/Yuji/Workspace/Web/iv_prj/pittsburgh.geojson", "OGRGeoJSON", verbose = F, p4s = '+init=epsg:4326', stringsAsFactors=F)
+
+ind <- which(map@data$name == "Observatory Hill")
+map@data[ind,1] <- "Perry North"
+map@data <- merge(map@data, dat2, by.x = "name", by.y = "Neighborhood", all.x = T, sort = F)
+
+par(mar = c(0,0,2,0))
+plot(map, col = rainbow(16)[map@data$Sector], main = "Planning Sector of Pittsburgh")
+p <- polygonsLabel(map, map@data$Sector, method = "centroid", cex = 0.8)
+par(op)
+```
+
+Each of the 16 sectors has unique characteristics shared by the neighborhoods that form that sector. The key components that determine the criteria in the formation of these sectors are:  _Neighborhood Boundaries, Geography, Council Districts, Community Resources, Community Assets, Transportation, School Feeder Patterns, Planning Processes, Neighborhood Character_.
+
+```{r cluster,fig.height=5}
+
+
+do.mds <- function(dataset, lbls) {
+  data.dist = dist(dataset)
+  data.mds = cmdscale(data.dist)
+  data.mds
+}
+
+do.kmeans <- function(dataset, lbls, k=4) {
+  set.seed(123)
+  data.clu = kmeans(dataset, centers=k, nstart=10)
+  data.clu
+}
+main <- "MDS on Visualizing Dataset"
+dat2.mds <- do.mds(dat2[-c(1:2)], labels)
+clu <- do.kmeans(dat2[-c(1:2)], labels, k = 16)$cluster
+data2 <- data.frame(x=dat2.mds[,1],y=dat2.mds[,2],name=dat2[[1]],sector=factor(dat2[[2]]), clu=factor(clu))
+
+#ggplot(aes(x=x,y=y,color=clu), data=data2) +
+#     geom_text(aes(x=x,y=y,color=clu,label=name), size=4)
+
+par(mar = c(0,0,2,0))
+plot(dat2.mds, type = "n")
+text(dat2.mds, labels, col = rainbow(16)[clu])
+title(main = "Cluster of Neighborhoods on MDS")
+par(op)
+
+cluster.purity <- function(clusters, classes) {
+  sum(apply(table(classes, clusters), 2, max)) / length(clusters)
+}
+cluster.entropy <- function(clusters,classes) {
+  en <- function(x) {
+    s = sum(x)
+    sum(sapply(x/s, function(p) {if (p) -p*log2(p) else 0} ) )
+  }
+  M = table(classes, clusters)
+  m = apply(M, 2, en)
+  c = colSums(M) / sum(M)
+  sum(m*c)
+}
+
+```
+
+MDS plot shows the cluster members clearly, but is hard to see the corresponding sector numbers. So I make a geo-plot with sector labels.
+
+```{r plot cluster map}
+par(mar = c(0,0,2,0))
+plot(map, col = rainbow(16)[clu], main = "Cluster Plot with Sector Labels")
+p <- polygonsLabel(map, map@data$Sector, method = "centroid", cex = 0.8)
+par(op)
+
+eval <- rbind(Purity = cluster.purity(clu, dat2[[2]]), Entropy = cluster.entropy(clu, dat2[[2]]))
+
+knitr::kable(eval, caption = "Clustering Performance")
+```
+
+Overall, it seems our clusters do not have a strong relationship with sectors. But the clusters do appear to be spatial adjacent. For example, there are 4 `green` clusters locate in 11 sector, another 2 pairs of them in 4 and 7 sector.
+
+******
