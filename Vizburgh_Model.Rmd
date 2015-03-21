@@ -17,13 +17,15 @@ knitr::opts_chunk$set(warning = FALSE,
 ```
 
 ```{r data}
-setwd('/Users/Yuji/Workspace/R/Visburgh')
+setwd('/Users/Yuji/Workspace/R/Visburgh/data')
 library(ggplot2)
 library(gridExtra)
 library(MASS)
 library(gdata)
 library(rgdal)
 library(rgeos)
+library(caret)
+library(car)
 
 data.transform <- function(data){
   for(i in 1:ncol(data)){
@@ -44,24 +46,34 @@ readXLS <- function(file){
   data.list <- list()
   sheetList <- sheetNames(file)
   for(i in 1:length(sheetList)){
-    data.list[[sheetList[i]]] <- data.transform(read.xls(file, sheet = sheetList[i], na.strings = "N/A"))
+    data.list[[sheetList[i]]] <- data.transform(read.xls(file, sheet = sheetList[i], na.strings = "N/A", check.names = FALSE))
   }
   data.list
 }
 
-xls.file <- "/Users/Yuji/Workspace/R/Visburgh/PGHSNAP.xls"
+xls.file <- "PGHSNAP.xls"
 data.list <- readXLS(xls.file)
 
 # colnames(newdata) <- gsub("\\.+",".",colnames(newdata))
 
 dat1 <- cbind(data.list[[2]][24], data.list[[2]][22], data.list[[5]][9:15])
+row.names(dat1) <- as.character(data.list[[1]][[1]])
 
 op <- par()
 ```
 
+Here are several questions left to answer:
+
+1. When to apply logarithm? Should I use it here?
+2. When and how to use glm Poisson model? Why it looks so strange when applied here?
+3. Is linear model right here? How to solve normality?
+4. If the model is right, how to interpret that some crimes have positive coefficients?
+
 # Housing Sales Price & Crime
+
+
 ## Log Effect on Finacial Data
-```{r log transformation,fig.height=3}
+```{r log transformation,fig.height=3,eval=FALSE}
 # cor(dat1, use = "complete.obs")
 p1 <- qplot(dat1[[1]], data = dat1, xlim = c(0,400000), xlab = "Median Sale Price", main = "Raw v.s. Log Median Sales Price")
 p2 <- qplot(log(dat1[[1]]), data = dat1, xlab = "log(Median Sale Price)")
@@ -72,49 +84,35 @@ p4 <- qplot(log(dat1[[2]]), data = dat1, xlab = "log(Median Home Value)")
 grid.arrange(p3, p4, ncol = 1)
 ```
 
-After apply logrithm on `Median Sales Price` and `Median Home Value`, right-skewed data looks normal.
+After applied logarithm on `Median Sales Price` and `Median Home Value`, right-skewed data looks normal. Although the R-squared in non-logarithmed model is higher, it does not obey the normality well. So I will use logarithmed data in the later steps.
 
-## Simple Linear Regression
-```{r simple linear}
-m.linear <- lm(Median.Sale.Price..2010. ~ ., dat1)
+After applied linear regression on whole data, I checked the multicollinearity by VIF. It shows that `#Agr. Assault (2010)` with 5.31 VIF should be removed from the model.
 
-# par(mar = rep(2, 4))
-# par(mfrow = c(2, 2))
-# plot(m.linear)
-# par(op)
-summary(m.linear)
-```
+## Linear Regression
+```{r linear regression}
+fmla <- as.formula(paste("`",colnames(dat1)[1], "`~", paste("`",colnames(dat1[-c(1,6)]),"`", collapse = "+", sep=""), sep=""))
 
-In this simple linear regression model, I do not do any transformation on data, and the result shows only `Median Home Value` is significant in this model. And the R-squared is about 0.62.
+dat1[1:2] <- log(dat1[1:2])
 
-## Linear Regression with Log Transformation
-```{r log linear}
-m.linear.log <- lm(log(Median.Sale.Price..2010.) ~ log(Median.Home..Value..2010.) + . - Median.Home..Value..2010., dat1)
+m.l <- lm(fmla, na.omit(dat1[-6]))
+# vif(m.l)
 
-# par(mar = rep(2, 4))
-# par(mfrow = c(2, 2))
-# plot(m.linear.log)
-# par(op)
-summary(m.linear.log)
+par(mar = rep(2, 4))
+par(mfrow = c(2, 2))
+plot(m.l)
+par(op)
+
+summary(m.l)
+#train_control <- trainControl(method="repeatedcv", number=10, repeats=10)
+#m.linear1 <- train(fmla, data = na.omit(dat1), #trControl=train_control, method="lm")
+#getTrainPerf(m.linear1)
 ```
 
 I add log transformation on `Median Sales Price` and `Median Home Value`. Although the R-squared decreases a little, `Drug` and `Murder` show their effect on the model.
 
-## Generalized Linear Regression
-```{r glm}
-m.glm <- glm(Median.Sale.Price..2010. ~ ., dat1, na.action=na.exclude, family=poisson)
-# par(mar = rep(2, 4))
-# par(mfrow = c(2, 2))
-# plot(m.glm)
-# par(op)
-summary.glm(m.glm)
-```
-
-The result of this GLM with Poisson family is strange, because all of the coefficients are significant.
-
 ## Linear Regression with PCA on Crime
 ```{r}
-pca.crime <- prcomp(dat1[-c(1,2)], scale = T)
+pca.crime <- prcomp(dat1[-c(1,2, 6)], scale = T)
 pc.crime <- predict(pca.crime)
 pca.crime$rotation
 #plot(pca.crime, main = "Screeplot of Crime")
@@ -124,7 +122,7 @@ pca.crime$rotation
 #plot(crime.mds, type = 'n', main = "Multidimensional Scaling on Crime")
 #text(crime.mds, labels=data.list[[1]][[1]])
 
-m.lm.pc <- lm(log(dat1$Median.Sale.Price..2010.) ~ log(dat1$Median.Home..Value..2010.) + pc.crime[,1] + pc.crime[,2])
+m.lm.pc <- lm(dat1[[1]] ~ dat1[[2]] + pc.crime[,1] + pc.crime[,2])
 # par(mar = rep(2, 4))
 # par(mfrow = c(2, 2))
 # plot(m.lm.pc)
@@ -132,7 +130,109 @@ m.lm.pc <- lm(log(dat1$Median.Sale.Price..2010.) ~ log(dat1$Median.Home..Value..
 summary(m.lm.pc)
 ```
 
-In this model, I do PCA on Crime and use PC1 and PC2 in the model. It is interesting that PC1 is not significant but PC2 is. According to the loadings of PC2, which has positive values on `Murder` and `Drug`, this result is consistent with the Linear Regression with Log Transformation.
+In this model, I do PCA on Crime and use PC1 and PC2 in the model. It is interesting that PC1 is not significant but PC2 is. According to the loadings of PC2, which has positive values on `Murder` and `Drug`, this result is consistent with the Linear Regression.
+
+It is common that `Murder` will have an effect on sales price, because it's a severe violence. But **it is surprised to see that `Drug Violations` is fair significant in this model.** Will this still happen when we apply linear regression on U.S. counties data? Let's see!
+
+# What about U.S. Counties Data?
+
+[Uniform Crime Reporting Program Data: County-Level Detailed Arrest and Offense Data, 2012 (ICPSR 35019)](http://www.icpsr.umich.edu/icpsrweb/DSDR/studies/35019)
+
+[Data < Zillow Real Estate Research](http://www.zillow.com/research/data/#zhvi)
+
+I choose all data in 2012, threshold for crime coverage indicator is 90, and only keep counties with more than 6-month data and get their median as price and value in 2012. After merging two datasets, I get 632 counties data records.
+
+```{r county data}
+setwd('/Users/Yuji/Workspace/R/Visburgh/data')
+crime <- get(load('ICPSR_35019/DS0001/35019-0001-Data.rda'))
+crime <- subset(crime, COVIND >= 90)
+price <- read.csv('County_MedianSoldPrice_AllHomes.csv', check.names = F)
+value <- read.csv('County_Zhvi_AllHomes.csv', check.names = F)
+price.2012 <- price[c(1:5, 195:206)]
+price.2012 <- price.2012[apply(price.2012, 1, function(x){mean(!is.na(x)) >= 0.5}), ]
+value.2012 <- value[c(1:5, 195:206)]
+value.2012 <- value.2012[apply(value.2012, 1, function(x){mean(!is.na(x)) >= 0.5}), ]
+
+price.2012$Median.Sale.Price.2012 <- 
+  apply(price.2012[-c(1:5)], 1, 
+        function(x){
+          median(x, na.rm=T)
+          })
+value.2012$Median.Home.Value.2012 <- 
+  apply(value.2012[-c(1:5)], 1, 
+        function(x){
+          median(x, na.rm=T)
+          })
+
+county <- merge(price.2012[-c(6:17)], value.2012[-c(1:3, 6:17)], by = c("StateCodeFIPS", "MunicipalCodeFIPS"))
+county <- merge(county, crime[-c(1:4)], 
+      by.x = c("StateCodeFIPS", "MunicipalCodeFIPS"), 
+      by.y = c("FIPS_ST", "FIPS_CTY"))
+county[6:7] <- log(county[6:7])
+row.names(county) <- 1:nrow(county)
+```
+
+Different with Pittsburgh data, the model with only `Median Home Value` will get a 0.935 R-squared. And I found high multicollinearity between predictors.
+
+## Same Crime with Before
+```{r}
+m.c <- lm(Median.Sale.Price.2012 ~., county[c(6:7, 16:20, 22, 33)])
+vif(m.c)
+par(mar = rep(2, 4))
+par(mfrow = c(2, 2))
+plot(m.c)
+par(op)
+summary(m.c)
+```
+
+We get a very different model with former one. Here, several crimes are significant, but due to multicollinearity, we should not count it as meaningful. And I also found a high correlation between population and many crimes. So I decide to use crime rate as predictor. (I have to remove 2 crimes that are juveniles only)
+
+## Use Crime Rate
+```{r}
+county.rate <- cbind(county[1:11], county[12:55]/county[[8]]*100)
+
+m.cr <- lm(Median.Sale.Price.2012 ~., data = county.rate[-40, c(6:7,16:20, 22, 33)])
+vif(m.cr)
+par(mar = rep(2, 4))
+par(mfrow = c(2, 2))
+plot(m.cr)
+par(op)
+qqPlot(m.cr, labels=row.names(m.cr), id.method="identify", simulate=TRUE, main="Q-Q Plot")
+summary(m.cr)
+```
+
+As we can see from VIF, the multicollinearity is solved by using Crime 100 per capita.
+
+## PCA on Crime Rate
+```{r}
+pca.county <- prcomp(county.rate[-40, c(16:20,22,33)], scale = T)
+pc.county <- predict(pca.county)
+pca.county$rotation
+#plot(pca.county, main = "Screeplot of Crime")
+
+#crime.dist <- dist(dat1[-c(1,2)])
+#crime.mds <- cmdscale(crime.dist)
+#plot(crime.mds, type = 'n', main = "Multidimensional Scaling on Crime")
+#text(crime.mds, labels=data.list[[1]][[1]])
+
+
+mus.pc <- lm(Median.Sale.Price.2012 ~., data = cbind(county.rate[-40, 6:7], pc.county))
+# par(mar = rep(2, 4))
+# par(mfrow = c(2, 2))
+# plot(m.lm.pc)
+# par(op)
+summary(mus.pc)
+vif(mus.pc)
+```
+
+## GLM Poisson
+```{r}
+
+glm.cr <- glm(Median.Sale.Price.2012 ~., data = cbind(exp(county[6:7]), county[c(16:20, 22, 33)])[-40,], family = poisson)
+summary(glm.cr)
+```
+
+I transform price and value back to original and applied poisson glm on count data. It is so strange that all coefficients are significant.
 
 ******
 

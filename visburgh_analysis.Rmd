@@ -140,5 +140,4 @@ lm(log(median.sale.price.2010) ~ pc_crime$X)
 [2]: http://en.wikipedia.org/wiki/South_Side_Flats "Wikipedia: South Side Flats"
 [3]: http://en.wikipedia.org/wiki/Squirrel_Hill_(Pittsburgh) "Wikipedia: Squirrel Hill (Pittsburgh)"
 [4]: http://en.wikipedia.org/wiki/Homewood_(Pittsburgh) "Wikipedia: Homewood (Pittsburgh)"
-[5]: http://www.brooklineconnection.com "The Brookline Connection
-"
+[5]: http://www.brooklineconnection.com "The Brookline Connection"
