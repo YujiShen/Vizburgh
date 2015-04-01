@@ -8,113 +8,173 @@ output:
 ---
 
 ******
-Data: [PGHSNAP Raw Data on Google Sheet](https://docs.google.com/spreadsheet/ccc?key=0Ag0xdSSLPcUHdEo0STlkRVBpcVZEcUtwTG9wWjJTd2c#gid=1)
+* Data: [PGHSNAP Raw Data on Google Sheet](https://docs.google.com/spreadsheet/ccc?key=0Ag0xdSSLPcUHdEo0STlkRVBpcVZEcUtwTG9wWjJTd2c#gid=1)
+* [Code on GitHub](https://github.com/YujiShen/Vizburgh)
+
+The purpose of this analysis is trying to find a model to illustrate the relationship between Median Sale Price and several crimes, and hope it will be consistent on different dataset.
+
+Here are several questions left to answer:
+
+1. According to the purpose of INTERPRETING, what should I focus in the model?
+1. Is interpreting useless? Should I change my topic and consider predicting or more valuable applications?
+1. How to do a complete regression diagnosis and fix the problem? (I did many parts of it, but I still can not pass the global test)
+2. Different transformation gives different model, which one should I pick? (Muder and Drug are significant when using number of crime, muder and burglary are significant when using crime rate)
+2. Why the county level crime rate are much LOWER than Pittsburgh neighborhood data? (1000 per capita in county-level has the same magnitude with 100 per capita in Pittsburgh neighborhood)
+3. With a very low R-squared but significant coefficent, how to interpret the model?
+4. How to evaluate the glm with gamma family?
+
+# Housing Sales Price & Crime
+
+Dependent variable: Median Sale Price
+
+Independent variables: Murder, Rape, Robbery, Agr.Assault, Burglary, Auto.Theft, Drug.Violations
+
+Filling missing values in Median Sale Price by `mice` method.
 
 ```{r knitr.setting,echo=FALSE}
 knitr::opts_chunk$set(warning = FALSE,
                       message = FALSE,
-                      echo = F)
+                      echo = FALSE)
 ```
 
-```{r data}
+```{r data,results='hide'}
 setwd('/Users/Yuji/Workspace/R/Visburgh/data')
 library(ggplot2)
-library(gridExtra)
 library(MASS)
-library(gdata)
 library(rgdal)
 library(rgeos)
 library(caret)
 library(car)
+library(mice)
+library(PerformanceAnalytics)
+library(gvlma)
 
-data.transform <- function(data){
-  for(i in 1:ncol(data)){
-    if(sum(grepl("\\$", data[[i]])) > 0){
-      data[i] <- gsub("\\$", "", data[[i]])
-    }
-    if(sum(grepl(",", data[[i]])) > 0){
-      data[i] <- as.numeric(gsub(",", "", data[[i]]))
-    }
-    if(sum(grepl("%", data[[i]])) > 0){
-      data[i] <- as.numeric(gsub("%", "", data[[i]]))/100
-    }
-  }
-  data
-}
-
-readXLS <- function(file){
-  data.list <- list()
-  sheetList <- sheetNames(file)
-  for(i in 1:length(sheetList)){
-    data.list[[sheetList[i]]] <- data.transform(read.xls(file, sheet = sheetList[i], na.strings = "N/A", check.names = FALSE))
-  }
-  data.list
-}
-
-xls.file <- "PGHSNAP.xls"
-data.list <- readXLS(xls.file)
-
-# colnames(newdata) <- gsub("\\.+",".",colnames(newdata))
-
-dat1 <- cbind(data.list[[2]][24], data.list[[2]][22], data.list[[5]][9:15])
+load("pitt.RData")
+load("county.level.RData")
+dat1 <- cbind(data.list[[2]][24], data.list[[5]][9:15])
 row.names(dat1) <- as.character(data.list[[1]][[1]])
+set.seed(36)
+dat1 <- complete(mice(dat1))
 
-op <- par()
+names(dat1) <- gsub(" ", ".", names(dat1))
+names(dat1) <- gsub("\\.\\.", ".", names(dat1))
+names(dat1) <- gsub(".{2}2010.", "", names(dat1))
+names(dat1) <- gsub("#", "", names(dat1))
+
+mar <- par()$mar
+
+residplot <- function(fit, nbreaks=10) {
+  z <- rstudent(fit)
+  hist(z, breaks=nbreaks, freq=FALSE,
+        xlab="Studentized Residual",
+        main="Distribution of Errors")
+  rug(jitter(z), col="brown")
+  curve(dnorm(x, mean=mean(z), sd=sd(z)),
+        add=TRUE, col="blue", lwd=2)
+  lines(density(z)$x, density(z)$y,
+        col="red", lwd=2, lty=2)
+  legend("topright",
+         legend = c( "Normal Curve", "Kernel Density Curve"),
+         lty=1:2, col=c("blue","red"), cex=.7)
+  }
 ```
 
-Here are several questions left to answer:
-
-1. When to apply logarithm? Should I use it here?
-2. When and how to use glm Poisson model? Why it looks so strange when applied here?
-3. Is linear model right here? How to solve normality?
-4. If the model is right, how to interpret that some crimes have positive coefficients?
-
-# Housing Sales Price & Crime
-
-
-## Log Effect on Finacial Data
-```{r log transformation,fig.height=3,eval=FALSE}
-# cor(dat1, use = "complete.obs")
-p1 <- qplot(dat1[[1]], data = dat1, xlim = c(0,400000), xlab = "Median Sale Price", main = "Raw v.s. Log Median Sales Price")
-p2 <- qplot(log(dat1[[1]]), data = dat1, xlab = "log(Median Sale Price)")
-grid.arrange(p1, p2, ncol = 1)
-
-p3 <- qplot(dat1[[2]], data = dat1, xlab = "Median Home Value", main = "Raw v.s. Log Median Housing Value")
-p4 <- qplot(log(dat1[[2]]), data = dat1, xlab = "log(Median Home Value)")
-grid.arrange(p3, p4, ncol = 1)
-```
-
-After applied logarithm on `Median Sales Price` and `Median Home Value`, right-skewed data looks normal. Although the R-squared in non-logarithmed model is higher, it does not obey the normality well. So I will use logarithmed data in the later steps.
-
-After applied linear regression on whole data, I checked the multicollinearity by VIF. It shows that `#Agr. Assault (2010)` with 5.31 VIF should be removed from the model.
-
-## Linear Regression
+## Linear Regression v.s Log Linear Regression
+### Linear Regression
 ```{r linear regression}
-fmla <- as.formula(paste("`",colnames(dat1)[1], "`~", paste("`",colnames(dat1[-c(1,6)]),"`", collapse = "+", sep=""), sep=""))
+# fmla <- as.formula(paste("`",colnames(dat1)[1], "`~", paste("`",colnames(dat1[-c(1,2)]),"`", collapse = "+", sep=""), sep=""))
 
-dat1[1:2] <- log(dat1[1:2])
+m.l <- lm(Median.Sale.Price ~ ., dat1)
 
-m.l <- lm(fmla, na.omit(dat1[-6]))
-# vif(m.l)
+cat("### Summary of Linear Model ###")
+gvmodel <- gvlma(m.l)
+summary(gvmodel)
 
-par(mar = rep(2, 4))
-par(mfrow = c(2, 2))
+par(mar = rep(2, 4), mfrow = c(2, 2))
 plot(m.l)
-par(op)
+par(mar = mar, mfrow = c(1, 1))
 
-summary(m.l)
 #train_control <- trainControl(method="repeatedcv", number=10, repeats=10)
 #m.linear1 <- train(fmla, data = na.omit(dat1), #trControl=train_control, method="lm")
 #getTrainPerf(m.linear1)
 ```
 
-I add log transformation on `Median Sales Price` and `Median Home Value`. Although the R-squared decreases a little, `Drug` and `Murder` show their effect on the model.
+### Log Linear Regression
+```{r}
+dat1.log <- dat1
+dat1.log[1] <- log(dat1[1])
+m.log <- lm(Median.Sale.Price ~ ., dat1.log)
+cat("### Summary of Linear Model with Logarithmed Median Sale Price ###")
+gvmodel <- gvlma(m.log)
+summary(gvmodel)
+par(mar = rep(2, 4), mfrow = c(2, 2))
+plot(m.log)
+par(mar = mar, mfrow = c(1, 1))
+```
+
+The log model has a better R-Squared, and Drug.Violations and Murder are significant. But 3 of 7 crimes with positive coefficients, showing that multicollinearity exists in the model.
+
+## Check Normality
+```{r log transformation}
+par(mfrow = c(2, 2))
+hist(dat1[[1]], breaks = 1000, xlim = c(0, quantile(dat1[[1]], probs = 0.98, na.rm = T)), main = "Histogram of Median Sale Price", xlab = "Median Sale Price")
+hist(dat1.log[[1]], breaks = 30, main = "Histogram of Logarithmed Median Sale Price", xlab = "Logarithmed Median Sale Price")
+qqPlot(m.l, labels=row.names(m.l), id.method="identify", simulate=TRUE, main="Q-Q Plot")
+qqPlot(m.log, labels=row.names(m.l), id.method="identify", simulate=TRUE, main="Q-Q Plot with Logrithmed Data")
+par(mfrow = c(1, 1))
+```
+
+After applied logarithm on Median Sales Price
+
+* From histogram, right-skewed data looks normal, 
+* From Q-Q plot, most points fall close to the line and are within the confidence envelope.
+
+## Solve Multicollinearity
+```{r multicollinearity}
+chart.Correlation(dat1.log)
+
+cat("### VIF of Log Linear Model ###")
+vif(m.log)
+
+m.log2 <- lm(Median.Sale.Price ~ ., dat1.log[-c(4,5,7)])
+cat("### Summary of Log Linear Model after Eliminating Robbery, Agr.Assault, Auto.Theft ###")
+summary(m.log2)
+cat("### VIF of Log Linear Model after Eliminating Robbery, Agr.Assault, Auto.Theft ###")
+vif(m.log2)
+```
+
+The VIFs of log model are not very large, but result is not good when I tried to eliminate some high VIF variables. So I am thinking about maybe population is an underlying common factor. I transform the number of crime into number of crime per 100 capita, like a larger crime rate.
+
+## Crime Rate insted of Number of Crime
+```{r crime rate}
+pop <- data.list[[1]][[10]]
+dat1.rate <- dat1.log
+dat1.rate[-1] <- dat1.rate[-1]/pop*100
+m.rate <- lm(Median.Sale.Price ~ ., dat1.rate)
+cat("### Summary of Log & Crime Rate Linear Model ###")
+gvmodel <- gvlma(m.rate)
+summary(gvmodel)
+cat("### VIF of Log & Crime Rate Linear Model ###")
+vif(m.rate)
+
+m.rate1 <- lm(Median.Sale.Price ~ ., dat1.rate[-c(4,5,7)])
+cat("### Summary of Log & Crime Rate Linear Model after Eliminating Robbery, Agr.Assault, Auto.Theft ###")
+gvmodel <- gvlma(m.rate1)
+summary(gvmodel)
+cat("### VIF of Log & Crime Rate Linear Model after Eliminating Robbery, Agr.Assault, Auto.Theft ###")
+vif(m.rate1)
+```
+
+When using crime rate as independent variables, the R-squared is higher than before. And after eliminating Robbery, Agr.Assault, Auto.Theft, the model implies that the Murder and Burglary are significant, instead of Murder and Drug.Violations. But the model still violates 3 linear regression assumptions.
 
 ## Linear Regression with PCA on Crime
 ```{r}
-pca.crime <- prcomp(dat1[-c(1,2, 6)], scale = T)
+pca.crime <- prcomp(dat1.rate[-1], scale = T)
 pc.crime <- predict(pca.crime)
+cat("### Rotation of PCs ###")
 pca.crime$rotation
+dat1.pca <- cbind(dat1.log[1], pc.crime)
+
 #plot(pca.crime, main = "Screeplot of Crime")
 
 #crime.dist <- dist(dat1[-c(1,2)])
@@ -122,17 +182,23 @@ pca.crime$rotation
 #plot(crime.mds, type = 'n', main = "Multidimensional Scaling on Crime")
 #text(crime.mds, labels=data.list[[1]][[1]])
 
-m.lm.pc <- lm(dat1[[1]] ~ dat1[[2]] + pc.crime[,1] + pc.crime[,2])
+m.pca <- lm(Median.Sale.Price ~ ., dat1.pca)
 # par(mar = rep(2, 4))
 # par(mfrow = c(2, 2))
 # plot(m.lm.pc)
 # par(op)
-summary(m.lm.pc)
+gvmodel <- gvlma(m.pca)
+cat("### Summary of PCA Linear Model ###")
+summary(gvmodel)
+cat("### VIF of PCA Linear Model ###")
+vif(m.pca)
 ```
 
-In this model, I do PCA on Crime and use PC1 and PC2 in the model. It is interesting that PC1 is not significant but PC2 is. According to the loadings of PC2, which has positive values on `Murder` and `Drug`, this result is consistent with the Linear Regression.
+It is hard to interpret the result of PCA.
 
-It is common that `Murder` will have an effect on sales price, because it's a severe violence. But **it is surprised to see that `Drug Violations` is fair significant in this model.** Will this still happen when we apply linear regression on U.S. counties data? Let's see!
+What will the model be if we use  U.S. county-level data? Let's see!
+
+***********
 
 # What about U.S. Counties Data?
 
@@ -140,71 +206,51 @@ It is common that `Murder` will have an effect on sales price, because it's a se
 
 [Data < Zillow Real Estate Research](http://www.zillow.com/research/data/#zhvi)
 
-I choose all data in 2012, threshold for crime coverage indicator is 90, and only keep counties with more than 6-month data and get their median as price and value in 2012. After merging two datasets, I get 632 counties data records.
-
-```{r county data}
-setwd('/Users/Yuji/Workspace/R/Visburgh/data')
-crime <- get(load('ICPSR_35019/DS0001/35019-0001-Data.rda'))
-crime <- subset(crime, COVIND >= 90)
-price <- read.csv('County_MedianSoldPrice_AllHomes.csv', check.names = F)
-value <- read.csv('County_Zhvi_AllHomes.csv', check.names = F)
-price.2012 <- price[c(1:5, 195:206)]
-price.2012 <- price.2012[apply(price.2012, 1, function(x){mean(!is.na(x)) >= 0.5}), ]
-value.2012 <- value[c(1:5, 195:206)]
-value.2012 <- value.2012[apply(value.2012, 1, function(x){mean(!is.na(x)) >= 0.5}), ]
-
-price.2012$Median.Sale.Price.2012 <- 
-  apply(price.2012[-c(1:5)], 1, 
-        function(x){
-          median(x, na.rm=T)
-          })
-value.2012$Median.Home.Value.2012 <- 
-  apply(value.2012[-c(1:5)], 1, 
-        function(x){
-          median(x, na.rm=T)
-          })
-
-county <- merge(price.2012[-c(6:17)], value.2012[-c(1:3, 6:17)], by = c("StateCodeFIPS", "MunicipalCodeFIPS"))
-county <- merge(county, crime[-c(1:4)], 
-      by.x = c("StateCodeFIPS", "MunicipalCodeFIPS"), 
-      by.y = c("FIPS_ST", "FIPS_CTY"))
-county[6:7] <- log(county[6:7])
-row.names(county) <- 1:nrow(county)
-```
-
-Different with Pittsburgh data, the model with only `Median Home Value` will get a 0.935 R-squared. And I found high multicollinearity between predictors.
+I choose all data in 2012, threshold for crime coverage indicator is 90, and only keep counties with more than 6-month data and get their median as sale price in 2012. After merging two datasets, I get a county-level data with 629 observations.
 
 ## Same Crime with Before
+
+Let's do the log on Median Sale Price and get the crime rate for the 7 kinds of crime we have used in Pittsburgh model.
+
+It is very strange that the crime per 100 capita of county level is much LOWER than Pittsburgh data, so I use crime per 1000 capita instead, which is at the same magnitude.
+
 ```{r}
-m.c <- lm(Median.Sale.Price.2012 ~., county[c(6:7, 16:20, 22, 33)])
+
+dat2 <- county[c(6, 16:20, 22, 33)]
+dat2.log.rate <- cbind(log(county[6]), county[c(16:20, 22, 33)]/county[[8]] * 1000)
+
+chart.Correlation(dat2.log.rate)
+
+m.c <- lm(Median.Sale.Price ~., dat2.log.rate)
 vif(m.c)
-par(mar = rep(2, 4))
-par(mfrow = c(2, 2))
+par(mar = rep(2, 4), mfrow = c(2, 2))
 plot(m.c)
-par(op)
-summary(m.c)
+par(mar = mar, mfrow = c(1, 1))
+qqPlot(m.c, labels=row.names(m.c), id.method="identify", simulate=TRUE, main="Q-Q Plot")
+residplot(m.c)
+
+gvmodel <- gvlma(m.c)
+cat("### Summary of Linear Model ###")
+summary(gvmodel)
 ```
 
-We get a very different model with former one. Here, several crimes are significant, but due to multicollinearity, we should not count it as meaningful. And I also found a high correlation between population and many crimes. So I decide to use crime rate as predictor. (I have to remove 2 crimes that are juveniles only)
-
-## Use Crime Rate
+## Eliminating the Variables & Compared to Pittsburgh
 ```{r}
-county.rate <- cbind(county[1:11], county[12:55]/county[[8]]*100)
-
-m.cr <- lm(Median.Sale.Price.2012 ~., data = county.rate[-40, c(6:7,16:20, 22, 33)])
-vif(m.cr)
-par(mar = rep(2, 4))
-par(mfrow = c(2, 2))
-plot(m.cr)
-par(op)
-qqPlot(m.cr, labels=row.names(m.cr), id.method="identify", simulate=TRUE, main="Q-Q Plot")
-summary(m.cr)
+m.c1 <- lm(Median.Sale.Price ~., dat2.log.rate[-c(4,5,7)])
+cat("### Summary of Pittsburgh Linear Model ###")
+summary(m.rate1)
+cat("### Summary of County Level Linear Model ###")
+summary(m.c1)
 ```
 
-As we can see from VIF, the multicollinearity is solved by using Crime 100 per capita.
+Something different with Pittsburgh model
+
+* R-squared is much lower
+* Murder is not strong significant, and the coefficient is much small
+* Drug is still positive but became significant
 
 ## PCA on Crime Rate
-```{r}
+```{r,eval=FALSE}
 pca.county <- prcomp(county.rate[-40, c(16:20,22,33)], scale = T)
 pc.county <- predict(pca.county)
 pca.county$rotation
@@ -225,14 +271,15 @@ summary(mus.pc)
 vif(mus.pc)
 ```
 
-## GLM Poisson
+## GLM Gamma
 ```{r}
-
-glm.cr <- glm(Median.Sale.Price.2012 ~., data = cbind(exp(county[6:7]), county[c(16:20, 22, 33)])[-40,], family = poisson)
-summary(glm.cr)
+m.gamma <- glm(Median.Sale.Price ~., data = dat2.log.rate, family = "Gamma")
+cat("### Summary of Gamma Model ###")
+summary(m.gamma)
+cat("### VIF of Gamma Model ###")
+vif(m.gamma)
 ```
 
-I transform price and value back to original and applied poisson glm on count data. It is so strange that all coefficients are significant.
 
 ******
 
@@ -244,31 +291,31 @@ I want to explore the relationship between **Planning Sector** and the **overall
 Here is the sector plot:
 
 ```{r plot sector}
-dat2 <- cbind(data.list[[1]][c(1, 2, 10, 22:27)],
+dat3 <- cbind(data.list[[1]][c(1, 2, 10, 22:27)],
               data.list[[2]][c(22, 24)],
               data.list[[4]][16],
               data.list[[5]][c(7, 9:15)],
               data.list[[2]][9:11])
 
-row.names(dat2) <- as.character(data.list[[1]][[1]])
-#dat2 <- na.omit(dat2)
-dat2[-c(1:2)] <- data.frame(apply(dat2[-c(1:2)], 2, function(x){
+row.names(dat3) <- as.character(data.list[[1]][[1]])
+#dat3 <- na.omit(dat3)
+dat3[-c(1:2)] <- data.frame(apply(dat3[-c(1:2)], 2, function(x){
   x[is.na(x)] <- median(x, na.rm = T)
   x
 }))
-dat2[-c(1:2)] <- scale(dat2[-c(1:2)])
+dat3[-c(1:2)] <- scale(dat3[-c(1:2)])
 labels <- as.character(data.list[[1]][[1]])
 
 map <- readOGR("/Users/Yuji/Workspace/Web/iv_prj/pittsburgh.geojson", "OGRGeoJSON", verbose = F, p4s = '+init=epsg:4326', stringsAsFactors=F)
 
 ind <- which(map@data$name == "Observatory Hill")
 map@data[ind,1] <- "Perry North"
-map@data <- merge(map@data, dat2, by.x = "name", by.y = "Neighborhood", all.x = T, sort = F)
+map@data <- merge(map@data, dat3, by.x = "name", by.y = "Neighborhood", all.x = T, sort = F)
 
 par(mar = c(0,0,2,0))
 plot(map, col = rainbow(16)[map@data$Sector], main = "Planning Sector of Pittsburgh")
 p <- polygonsLabel(map, map@data$Sector, method = "centroid", cex = 0.8)
-par(op)
+par(mar = mar)
 ```
 
 Each of the 16 sectors has unique characteristics shared by the neighborhoods that form that sector. The key components that determine the criteria in the formation of these sectors are:  _Neighborhood Boundaries, Geography, Council Districts, Community Resources, Community Assets, Transportation, School Feeder Patterns, Planning Processes, Neighborhood Character_.
@@ -288,18 +335,18 @@ do.kmeans <- function(dataset, lbls, k=4) {
   data.clu
 }
 main <- "MDS on Visualizing Dataset"
-dat2.mds <- do.mds(dat2[-c(1:2)], labels)
-clu <- do.kmeans(dat2[-c(1:2)], labels, k = 16)$cluster
-data2 <- data.frame(x=dat2.mds[,1],y=dat2.mds[,2],name=dat2[[1]],sector=factor(dat2[[2]]), clu=factor(clu))
+dat3.mds <- do.mds(dat3[-c(1:2)], labels)
+clu <- do.kmeans(dat3[-c(1:2)], labels, k = 16)$cluster
+data2 <- data.frame(x=dat3.mds[,1],y=dat3.mds[,2],name=dat3[[1]],sector=factor(dat3[[2]]), clu=factor(clu))
 
 #ggplot(aes(x=x,y=y,color=clu), data=data2) +
 #     geom_text(aes(x=x,y=y,color=clu,label=name), size=4)
 
 par(mar = c(0,0,2,0))
-plot(dat2.mds, type = "n")
-text(dat2.mds, labels, col = rainbow(16)[clu])
+plot(dat3.mds, type = "n")
+text(dat3.mds, labels, col = rainbow(16)[clu])
 title(main = "Cluster of Neighborhoods on MDS")
-par(op)
+par(mar = mar)
 
 cluster.purity <- function(clusters, classes) {
   sum(apply(table(classes, clusters), 2, max)) / length(clusters)
@@ -323,9 +370,9 @@ MDS plot shows the cluster members clearly, but is hard to see the corresponding
 par(mar = c(0,0,2,0))
 plot(map, col = rainbow(16)[clu], main = "Cluster Plot with Sector Labels")
 p <- polygonsLabel(map, map@data$Sector, method = "centroid", cex = 0.8)
-par(op)
+par(mar = mar)
 
-eval <- rbind(Purity = cluster.purity(clu, dat2[[2]]), Entropy = cluster.entropy(clu, dat2[[2]]))
+eval <- rbind(Purity = cluster.purity(clu, dat3[[2]]), Entropy = cluster.entropy(clu, dat3[[2]]))
 
 knitr::kable(eval, caption = "Clustering Performance")
 ```
