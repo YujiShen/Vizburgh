@@ -1,0 +1,376 @@
+---
+title: "[VizBurgh](http://yuji.im/vizburgh/dashboard.html) |  Pittsburgh Neighborhood Data Analysis"
+author: "By YUJI SHEN, [yuji.im](http://yuji.im) | FEBURARY 25, 2015"
+output:
+  html_document:
+    css: ~/Workspace/Web/markdown.css
+---
+
+```{r knitr.setting,echo=FALSE}
+knitr::opts_chunk$set(warning = FALSE,
+                      message = FALSE,
+                      echo = FALSE)
+```
+
+******
+
+```{r data}
+library(reshape2)
+library(ggplot2)
+library(dplyr)
+library(plyr)
+library(DT)
+library(rgdal)
+library(rgeos)
+# library(maptools)
+# library(mapproj)
+library(leaflet)
+
+setwd('/Users/Yuji/Workspace/R/Visburgh')
+data <- read.csv("data/data.csv", header=T, na.strings = "N/A", stringsAsFactors = F)
+rownames(data) <- data[,1]
+group.name <- c("North Oakland", "Central Oakland", "South Oakland", "West Oakland", "Shadyside", "Squirrel Hill North", "Squirrel Hill South")
+group.color <- c("#56B4E9", "#E69F00", "#CC79A7", "#D55E00", "#009E73", "#0072B2", "#F0E442")
+```
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;_This is an analysis article for my D3 visualization site: [VizBurgh](http://yuji.im/vizburgh/dashboard.html), which visualizes the social-economic data of Pittsburgh and each of its neighborhoods. I will utilize exploratory data analysis techniques and unsupervised machine learning to analyze the data I used in VizBurgh from [PGHSNAP](http://www.pittsburghpa.gov/dcp/snap/). Feel free to play with it and use it as a reference for this article. Just a reminder that you can click each neighborhood on the map and go to its profile._
+
+## Trends for Population
+
+```{r population}
+pop <- data[c(1,3:10)]
+colnames(pop) <- c("neibor", seq(1940, 2010, 10))
+
+boxplot(pop[-1],main = "Box Plot for Population of Neighborhoods in Pittsburgh (1940 - 2010)")
+```
+
+First, let's look at the overall trends of population in Pittsburgh. As you can see in the box plot, the median population of neighborhoods increased a little in 1950 then decreasing until 2010. This is true according to history:
+
+> In the latter 20th century, the area shifted its economic base to education, tourism, and services, largely based on healthcare/medicine, finance, and high technology such as robotics. Although Pittsburgh successfully shifted its economy and remained viable, the city's population never rebounded to its industrial-era highs. While 680,000 people lived in the city proper in 1950, a combination of suburbanization and economic turbulence caused a decrease in city population.^[1]^
+
+And there are several interesting points about the bound of plot: after 1960, there emerged some super-neighbors and their amount is gradually increasing. But it seems one or some neighbors are always uninhabited so the lower bound of each box keeps approaching 0. You may ask: who are they?
+
+## Population Outliers Analysis
+
+```{r}
+outliers <- list()
+for(i in 4:9) {
+  outliers[[i-3]] <- pop[pop[,i] %in% boxplot(pop[,i], plot=FALSE)$out, c(1, i)]
+}
+names(outliers) <- seq(1960, 2010, 10)
+
+zero <- list()
+for(i in 2:9) {
+  zero[[i-1]] <- pop[which.min(pop[[i]]), c(1, i)]
+}
+names(zero) <- seq(1940, 2010, 10)
+
+```
+
+I list all outliers in boxplot and sort them descendent.
+
+* __1960__: Homewood South
+* __1970__: Brookline
+* __1980__: Brookline > Squirrel Hill South > Shadyside
+* __1990__: Brookline > Squirrel Hill South > Shadyside
+* __2000__: Squirrel Hill South > Brookline > Shadyside
+* __2010__: Squirrel Hill South > Brookline > Shadyside >  Squirrel Hill North > North Oakland > Carrick
+
+From the population of these outliers we can also find the fact that Pittsburgh is losing its people dramatically. From 22463 (Homewood South) to 10113 (Carrick), the line for outliers cut half in 50 years. But it also represents that these neighborhoods are losing residents in a slower rate than others.
+
+```{r leader table}
+knitr::kable(pop[c(42, 14, 77), -1])
+```
+
+I dig a little deeper into three leader neighborhoods, you can see their population data in above table as a reference:
+
+* __Homewood South__ surged during 1950s due to the construction of Civic Arena. The city displaced 8000 people, and most of them were less affluent blacks. African-American influx caused a lot of the white middle class moved out of this area. The business of Homewood was crippled by the riots caused by the assassination of Dr. Martin Luther King Jr. on April 4 1968. That's why its population plunged in 1960s.^[2]^
+* __Brookline__ kept growing during post-war years until 1970s. This growth is fed by Pittsburgh's steel mills. During Pittsburgh's Renaissance I in the 1950s, when the area of the Lower Hill District was demolished, many displaced city residents migrated to the area around lower Pioneer Avenue, spurring the last big population surge. With the steel industry declined, the population dropped quickly after 1970s.^[3]^
+* __Squirrel Hill South__ together with Squirrel Hill North, you can treat them as a single neighborhood. Their population change follows the overall trend of Pittsburgh very well. I infer some reasons from Wikipedia^[4]^:
+    1. Squirrel Hill is a residential area, not an industrial zone. So when people left Pittsburgh, part of them from Squirrel Hill.
+    2. Squirrel Hill did not affect much by political or municipal event.
+    3. The composition of demographics is mainly wealthy white pepole, espacially Jewish (40%). They built business and culture here, which helps keep this area stable.
+
+And the least-resident neighborhoods are South Shore (1940 - 1980) and Chateau (1990 - 2010). These two areas are industrial neighborhoods, consisted by some warehouses and places of business.
+
+## Who Are Growing?
+
+It is clear that most of neighbors' population are decreasing during these 70 years. But is there any special one actually growing under this severe condition? The answer is YES! See the plot below.
+
+```{r}
+pop.change <- NULL
+for(i in 3:9){
+  pop.change <- cbind(pop.change, pop[[i]] - pop[[i-1]])
+}
+up <- rownames(pop[rowSums(pop.change > 0) > 3, -1])
+
+pop.up <- melt(pop, id = c("neibor"))
+
+for(i in 1:nrow(pop.up)){
+  if(!(pop.up$neibor[i] %in% up)){
+    pop.up$group[i] <- "Others"
+  }else{
+    pop.up$group[i] <- pop.up$neibor[i]
+  }
+}
+pop.up$group <- factor(pop.up$group, levels = c(up, "Others"), ordered = T)
+
+cols <- c("#E69F00", "#F0E442", "#009E73", "#56B4E9", "#CC79A7","#999999")
+ggplot(aes(x = variable, y = value, color = group, group = neibor), 
+       data = pop.up) + 
+  geom_line(aes(size = group, alpha = group, order = group)) + 
+  scale_color_manual(name = 'Neighborhood', values = cols) +
+  scale_size_manual(values = c(1.5,1.5,1.5,1.5,1.5,0.5), guide = "none") +
+  scale_alpha_manual(values = c(1,1,1,1,1,0.3), guide = "none") +
+    theme_bw() +
+  theme(legend.position = "bottom") +
+  guides(col = guide_legend(override.aes = list(size=2), byrow = T, nrow = 2)) + 
+  labs(title = "Neighbors Population Growing More Than 3 Times in 7 Decades", x = "Year", y = "Population")
+```
+
+There are only five neighbors growing more than 30 years (discrete) during these seven decades. The most noticeable one is __North Oakland__, which incredibly almost doubles its population! The other four are good and keeps their residents steady after 1970, but their base numbers are smaller and growth rate are lower than North Oakland.
+
+In a big picture, the number of neighborhoods that were growing for each decade is an "U" shape, shown in the plot below. There are 44 neighborhoods' population are increasing during 1940 - 1950. But this number keeps dropping until recent 30 years. In the most recent decade, Oakland (except South Oakland), Shadyside and Squirrel Hill are all growing on their population. More impressively, they contribute **51.6%** (3550 people) for the total increasing residents (6874) in 18 growing neighborhoods. So in the next part, I will move my focus to these areas, the second center of Pittsburgh.
+
+```{r fig.height=4}
+increase <- apply(pop.change, 2, FUN = function(x) {
+  paste("+", sum(x[which(x > 0)]), sep = "")
+})
+
+colup <- colSums(pop.change > 0)
+colup <- data.frame(year = c("1940-1950","1950-1960","1960-1970","1970-1980","1980-1990","1990-2000","2000-2010"), Number = colup, Increase = increase)
+
+ggplot(colup, aes(x=year, y = Number, fill = Number)) +
+  geom_bar(color = "gray", stat = "identity") +
+  scale_fill_gradient(limits=c(0, 50), low="orange", high="red", space="Lab") +
+  ylim(0, 50) +
+  stat_identity(aes(label=Number), vjust=-0.3, 
+             geom="text", position="identity") +
+  geom_text(aes(label=Increase), vjust=+2, size = 4, color = "white") +
+  labs(title = "Number of Neighbors' Population Were Growing (Above the bar)\nNumber of Population Added by These Neighbors (In the bar)", x = "Decade", y = "Number") +
+    theme_bw() +
+  theme(axis.title.y = element_blank(), axis.text.x = element_text(angle = 10, vjust = 0.5))
+```
+
+## Oakland, Shadyside & Squirrel Hill
+
+See this map for the locations of these neighborhoods in Pittsburgh. Feel free to zoom in and zoom out!
+
+```{r map leaflet}
+map <- readOGR("/Users/Yuji/Workspace/Web/iv_prj/pittsburgh.geojson", "OGRGeoJSON", verbose = F, stringsAsFactors=F)
+#map <- spTransform(map, CRS("+init=epsg:4269"))
+
+
+ind <- which(map@data$name %in% group.name)
+
+map@data$label <- NA
+map@data$label[ind] <- map@data$name[ind]
+
+map@data$label <- factor(map@data$label, levels = group.name, ordered = T)
+
+### Using leaflet
+
+pal <- colorFactor(group.color, map@data$label, levels = group.name,  ordered = T)
+
+leaflet(map) %>%  
+  addProviderTiles("HERE.normalDayGreyMobile", options = providerTileOptions(app_id = "eJ3bPJmnPKgaUIPigk47", app_code="1AZtbL47wJ9qv80CdUmP9w")) %>%
+  addPolygons(
+    stroke = F, fillOpacity = 0.6, smoothFactor = 0.5,
+    fillColor = ~pal(label)
+  ) %>%
+  addLegend(pal = pal, "bottomright", values = ~label, na.label = "Others",  opacity = 1, title = "Neighborhoods") %>%
+  addMarkers("-79.95315", "40.444331", popup = "University of Pittsburgh") %>%
+  addMarkers("-79.942553", "40.442493", popup = "Carnegie Mellon University") %>%
+  addMarkers("-79.961196", "40.441985", popup = "UPMC Oakland Campus") %>%
+  addMarkers("-79.939494", "40.454394", popup = "UPMC Shadyside") %>%
+  setView(lat = "40.438062", lng = "-79.922998", zoom = 13)
+
+### Basic plot
+# plot(map)
+# p <- polygonsLabel(map, map@data$label, method = "centroid", cex = 0.8)
+
+### Using ggplot
+# map@data$id <- rownames(map@data)
+# map.df <- fortify(map, region = "id")
+# map.df <- merge(map.df, map@data, by = "id")
+# ggplot(map.df, aes(long,lat, group=group, fill=name)) + 
+#   geom_polygon() + 
+#   geom_path(color = "white") +
+#   scale_fill_hue(l = 40) + 
+#   coord_map("mercator") +
+#   theme(legend.position = "none", title = element_blank(),
+#         axis.text = element_blank())
+```
+
+From former analysis we already know that North Oakland is a very special one, whose population keeps raising when most of other neighbors are falling down. Actually, North Oakland is a miniature of the transition of Pittsburgh. It is one of four neighborhoods in Oakland, which is considered  Pittsburgh's university center. The **University of Pittsburgh** locates here and you can see its landmark Cathedral of Learning from far far away. **Carnegie Mellon University**, closed to Pitt, lies in the adjacent neighborhood Squirrel Hill North.
+
+Besides education, medicine and healthcare is another engine for Pittsburgh. University of Pittsburgh Medical Center (UPMC), which is second hospital in Pennsylvania and provides 40600 job positions in Pittsburgh^[5]^, has several flagship facilities in these areas, such as **UMPC Oakland Campus** and **UPMC Shadyside**.
+
+See this table for detailed comparison between Oakland, Shadyside & Squirrel Hill ("the group" in the later) and other neighbors. Scroll horizontally for more columns.
+
+```{r group table}
+data["African.American"] <- data["African.American"]/data["Pop.2010"]
+data["Asian"] <- data["Asian"]/data["Pop.2010"]
+data["White"] <- data["White"]/data["Pop.2010"]
+data["Other"] <- data["Other"]/data["Pop.2010"]
+data["Crime.Report"] <- data["Part.1.Reports"] + data["Part.2.Reports"] + data["Other.Police.Reports"]
+sub <- data[group.name, c(1,10,11,15,12,13,14,17:20,34,31:33)]
+
+sub.table <- rbind(sub, colwise(median, na.rm = T)(data[group.name, c(1,10,11,15,12,13,14,17:20,34,31:33)]))
+sub.table <- rbind(sub.table, colwise(median, na.rm = T)(subset(data[c(1,10,11,15,12,13,14,17:20,34,31:33)], !Neighborhood %in% group.name)))
+sub.table <- rbind(sub.table, colwise(median, na.rm = T)(data[c(1,10,11,15,12,13,14,17:20,34,31:33)]))
+sub.table$Neighborhood[8:10] <- c("Group Median", "Others Median", "All Median")
+
+colnames(sub.table) <- c("Neighborhood.Name", "Pop.", "Persons / acre", "White", "AA", "Asian", "Other", "Home.Value", "House Sale.Price", "Income", "Poverty", "Crime", "Good BLDG", "Average BLDG", "Poor BLDG")
+
+datatable(
+  sub.table,
+  rownames = FALSE, 
+  extensions = list(FixedColumns = list(leftColumns = 1)),
+  options = list(
+    dom = 't',
+    scrollX = TRUE,
+    scrollCollapse = TRUE)
+  ) %>% 
+  formatRound(c("Pop.", "Income", "Persons / acre"), digits = c(0,0,1)) %>%
+  formatCurrency(c("Home.Value", "House Sale.Price", "Income")) %>% 
+  formatPercentage(c("White", "AA", "Asian", "Other", "Poverty", "Good BLDG", "Average BLDG", "Poor BLDG")) %>%
+  formatStyle("Neighborhood.Name", fontWeight = "bold", color = styleEqual(sub.table$Neighborhood, c(group.color, "black", rep("grey", 2))))
+```
+
+How is the group different with other neighbors? Focus on the row of **Group Median**, you will find it. 
+
+* For population, the group has much more residents and much denser than others'. More White and Asian, less African-American people in its demographic composition.
+* It is also a polarized area. Its home value, house sale price and income overwhelm the rest of Pittsburgh. But the poverty rate and crime are also higher than the average.
+* In terms of economy, the structure of employment in Oakland, Shadyside & Squirrel Hill are quite different with CBD and Strip District, which have many jobs about Finance and Business. But here, education, health and social service positions consist of at least 40% employment in these neighborhoods.^[6]^
+
+Although they share some similarities, we should not omit personality for each neighborhood. For example:
+
+* One Oakland, four different neighborhoods. North Oakland has a much larger population than other three Oaklands, almost equals to the sum of them. West Oakland is the most job-dense also the most samll neighbor among them, with almost 94 jobs per arce. Central Oakland owns the lowest median income and South Oakland has the highest poverty rate.
+* Difference also appears between two Squirrel Hills: North is one of most wealth neighbors in Pittsburgh, whose residents has the highest median income $83,861, which is amazingly high in Pittsburgh! South is the largest neighborhoods in land area, and 50% area is open space. Zoom in the map you can see two big park, Schenley Park and Frick Park, yes they are.
+* Shadyside won't be forgotten. I live here now and 20% residents of it are Asian, I am one of them. Although it has a smaller population than Squirrel Hill South, its employed people are the most one in Pittsburgh.
+
+## Clusters in the Group
+
+In the last part of this article, I will do a little machine learning. I want to use K-Means clustering to distinguish these seven neighborhoods into several subgroups. Instead of comparing them hard in the table, clustering is an easy way to partition individuals based on their overall features.
+
+```{r mds}
+do.mds <- function(dataset) {
+  data.dist <- dist(dataset)
+  data.mds <- cmdscale(data.dist)
+  data.mds
+}
+
+group.mds <- data.frame(do.mds(sub[-1]))
+colnames(group.mds) <- c("x", "y")
+group.mds$name <- factor(group.name, levels = group.name, ordered = T)
+
+ggplot(group.mds, aes(x, y)) +
+  geom_point(aes(color = name, order = name)) +
+  geom_text(aes(color = name, label = name)) +
+  scale_color_manual(values = group.color, guide="none") +
+  ylim(min(group.mds$y * 1.2), max(group.mds$y * 1.2)) +
+  xlim(min(group.mds$x * 1.5), max(group.mds$x * 1.5)) +
+  ggtitle("Multidimensional Scaling on 2D Plot") +
+  theme_bw() +
+  theme(axis.ticks = element_blank(),
+       axis.text.x = element_blank(),
+       axis.text.y = element_blank(),
+       axis.title.x = element_blank(),
+       axis.title.y = element_blank())
+```
+
+```{r kmean, echo=F, include=F}
+do.kmeans <- function(dataset, k=4) {
+  set.seed(1234)
+  data.clu <- kmeans(dataset, centers=k, nstart=10, iter.max = 1000)
+  data.clu
+}
+
+group.clu2 <- do.kmeans(scale(sub[-1]), 2)
+group.clu2$cluster
+
+group.clu3 <- do.kmeans(scale(sub[-1]), 3)
+group.clu3$cluster
+
+group.clu4 <- do.kmeans(scale(sub[-1]), 4)
+group.clu4$cluster
+
+group.clu5 <- do.kmeans(scale(sub[-1]), 5)
+group.clu5$cluster
+```
+
+Above is an MDS plot for the data in the table. The advantage of MDS is to map the high dimensional data into lower dimensions and preserving the distances between each observation. It is a way to visualize and find similarity of high dimensional data. Under the MDS, North Oakland stands away from other neighborhoods; West Oakland and South Oakland seems very similar to each other. Shadyside can be grouped with Squirrel Hill. Let's see the result of K-Means to prove our observation.
+
+I did K-Means clustering several times with different number of groups (from 2 to 4) for comparison, and here is the result:
+
+* Two Clusters:
+    1. North Oakland, Shadyside, Squirrel Hill North, Squirrel Hill South
+    2. Central Oakland, South Oakland, West Oakland
+* Three Clusters:
+    1. North Oakland, Central Oakland
+    3. South Oakland, West Oakland
+    2. Shadyside, Squirrel Hill North, Squirrel Hill South 
+* Four Clusters:
+    1. North Oakland, Central Oakland
+    4. South Oakland, West Oakland
+    2. Squirrel Hill North
+    3. Shadyside, Squirrel Hill South
+
+While the result is not exactly the same with our guesses, but quite similar. The reason to do multiple times is I do not know the real clusters number here, so I have to try and see how the cluster members change when numbers change.
+
+* First, we can easily see that West Oakland & South Oakland is a pair, they show together every time. 
+* Compared to its little brother Squirrel Hill North, Squirrel Hill South is more similar to Shadyside.
+* Although North Oakland stands out on the MDS plot, it always tangles with others in clustering. According to the majority voting and observation in the MDS plot, I think it is more close to Central Oakland than Shadyside.
+* And the first stand-out neighborhood is Squirrel Hill North, which is not a surprise to me. Its wealth makes it so different with other neighbors in this group.
+
+## The End
+As President Obama said, "Pittsburgh stands as a bold example of how to create new jobs and industries while transitioning to a 21st century economy."^[6]^ I am one of beneficiaries  of the development of Pittsburgh's education industry, and I am proud to live and study in its new center Oakland for two years. Pittsburgh has so many livable and diverse neighborhoods, and its economy is in the right direction. I am confident it will become a competitive city in the future.
+
+_I want to say **"Thank you"** to everyone reads all the way to this line. I know this article may boring for people do not live in Pittsburgh and because of my poor writing skill. But I really enjoy the process of exploring, analyzing and visualizing these data. I feel I know more about Pittsburgh when doing this analysis. It is a  fantastic experience! I hope you will like this and feel free to give me any suggestions. Contact me via yuji.im.shen at Gmail._
+
+```{r population3, eval=FALSE}
+
+pop.sub <- sub[c(1,3:10)]
+colnames(pop.sub) <- c("neibor", seq(1940, 2010, 10))
+pop.melt <- melt(pop.sub, id=c("neibor"))
+pop.melt$variable <- as.numeric(as.character(pop.melt$variable))
+pop.med <-data.frame(apply(pop[-1],2,median))
+pop.med$variable <- seq(1940, 2010, 10)
+names(pop.med)[1] <- "value"
+
+cols <- c("#E69F00", "#56B4E9","#999999", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+# cols <- c(rainbow(7)[1:2], "black", rainbow(7)[3:7])
+
+ggplot() +
+  geom_line(aes(x = variable, y = value, group = neibor, color = neibor, fill = neibor), data=pop.melt, size = 1.5) +
+  geom_line(aes(x = variable, y = value, color ="Pittburgh Median", fill="Pittburgh Median"), data = pop.med, linetype = 2, size = 1.5) +
+  scale_color_manual(name = 'Neighborhood', values = cols) +
+  scale_x_continuous(name="Year", breaks = seq(1940, 2010, 10)) +
+  scale_y_continuous(name="Population",breaks = seq(0,25000, 2500))
+```
+
+```{r, eval=FALSE}
+glm(median.sale.price.2010 ~ median.home.value.2010 + murder + rape + robbery + assault + burglary + auto.theft + drug.violations)
+lm(log(median.sale.price.2010) ~ log(median.home.value.2010) + murder + rape + robbery + assault + burglary + auto.theft + drug.violations)
+glm(median.sale.price.2010 ~ median.home.value.2010 + murder + rape + robbery + assault + burglary + auto.theft + drug.violations, family=Poisson)
+prcomp(crime)
+pc_crime <- prcomp(crime)
+lm(log(median.sale.price.2010) ~ pc_crime$X)
+```
+
+### References
+
+1. [Wikipedia: Pittsburgh](http://en.wikipedia.org/wiki/Pittsburgh)
+2. [Wikipedia: Homewood (Pittsburgh)](http://en.wikipedia.org/wiki/Homewood_(Pittsburgh))
+3. [The Brookline Connection](http://www.brooklineconnection.com)
+4. [Wikipedia: Squirrel Hill (Pittsburgh)](http://en.wikipedia.org/wiki/Squirrel_Hill_(Pittsburgh))
+5. [PGHSNAP - Neighborhoods: All Raw Data -  Employment](https://docs.google.com/spreadsheets/d/1fp94gJxmO2eikIQ6tYzpXmvhF0KNzqf_L1GY_6JuF1g/edit#gid=2)
+6. [Wikipedia: Economy of Pittsburgh](https://en.wikipedia.org/wiki/Economy_of_Pittsburgh)
+
+[1]: http://en.wikipedia.org/wiki/Pittsburgh "Wikipedia: Pittsburgh"
+[2]: http://en.wikipedia.org/wiki/Homewood_(Pittsburgh) "Wikipedia: Homewood (Pittsburgh)"
+[3]: http://www.brooklineconnection.com "The Brookline Connection"
+[4]: http://en.wikipedia.org/wiki/Squirrel_Hill_(Pittsburgh) "Wikipedia: Squirrel Hill (Pittsburgh)"
+[5]: https://docs.google.com/spreadsheets/d/1fp94gJxmO2eikIQ6tYzpXmvhF0KNzqf_L1GY_6JuF1g/edit#gid=2 "PGHSNAP - Neighborhoods: All Raw Data [Employment]"
+[6]: https://en.wikipedia.org/wiki/Economy_of_Pittsburgh "Economy of Pittsburgh"
